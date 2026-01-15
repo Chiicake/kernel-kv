@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "core"
+name = "kv-core"
 version = "0.1.0"

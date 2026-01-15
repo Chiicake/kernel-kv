@@ -1,4 +1,4 @@
-mod data_struct;
+mod storage_struct;
 mod common;
 
 fn main() {
