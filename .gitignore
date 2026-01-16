@@ -49,3 +49,7 @@ $RECYCLE.BIN/
 .dockerignore
 *.orig
 coverage/
+
+PROJECT_DESIGN.md
+
+our target is to make the fastest one-mechian cache module, after we finish the project, we will make a experiment to compare with existing cache module like Redis or Memcached, please update the experiment to the project_design
