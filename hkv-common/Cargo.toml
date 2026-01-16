@@ -1,6 +1,9 @@
 [package]
 name = "hkv-common"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 
 [dependencies]
+# No dependencies needed for just the ioctl command definitions
