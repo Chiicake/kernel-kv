@@ -67,6 +67,18 @@
 //! +------------+-----------+-------------+-------------------+
 //! | header:4B  | status:2B | reserved:2B | stats:104B        |
 //! +------------+-----------+-------------+-------------------+
+//!
+//! ConfigRequest (36 bytes total):
+//! +------------+-------------+-------------+-----------+-----------+
+//! | header:4B  | max_bytes:8B| max_entries:8B| high:4B | low:4B    |
+//! +------------+-------------+-------------+-----------+-----------+
+//! | reserved:8B                                                   |
+//! +---------------------------------------------------------------+
+//!
+//! FlushRequest (4 bytes total):
+//! +------------+
+//! | header:4B  |
+//! +------------+
 //! ```
 
 use crate::ioctl::{IoctlCommand, IOCTL_MAGIC};
@@ -429,6 +441,63 @@ impl StatsResponse {
     }
 }
 
+/// Runtime configuration update for the kernel cache.
+///
+/// This keeps configuration fields aligned and explicit for easy validation
+/// inside the kernel module.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigRequest {
+    /// Common ioctl header (command must be CONFIG).
+    pub header: IoctlHeader,
+    /// Maximum memory allowed for the cache (bytes).
+    pub max_bytes: u64,
+    /// Maximum number of entries allowed.
+    pub max_entries: u64,
+    /// High watermark percentage (0-100) for eviction start.
+    pub high_watermark: u32,
+    /// Low watermark percentage (0-100) for eviction stop.
+    pub low_watermark: u32,
+    /// Reserved for future configuration fields; must be zero.
+    pub reserved: u64,
+}
+
+impl ConfigRequest {
+    /// Builds a config request with explicit values.
+    pub fn new(
+        max_bytes: u64,
+        max_entries: u64,
+        high_watermark: u32,
+        low_watermark: u32,
+    ) -> Self {
+        ConfigRequest {
+            header: IoctlHeader::new(IoctlCommand::Config),
+            max_bytes,
+            max_entries,
+            high_watermark,
+            low_watermark,
+            reserved: 0,
+        }
+    }
+}
+
+/// Flush request payload for clearing all kernel cache entries.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlushRequest {
+    /// Common ioctl header (command must be FLUSH).
+    pub header: IoctlHeader,
+}
+
+impl FlushRequest {
+    /// Builds a flush request.
+    pub const fn new() -> Self {
+        FlushRequest {
+            header: IoctlHeader::new(IoctlCommand::Flush),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,5 +643,28 @@ mod tests {
         assert_eq!(std::mem::size_of::<CacheStats>(), 104);
         assert_eq!(std::mem::size_of::<StatsRequest>(), 4);
         assert_eq!(std::mem::size_of::<StatsResponse>(), 112);
+    }
+
+    #[test]
+    fn test_config_request_new() {
+        let request = ConfigRequest::new(256, 100, 80, 70);
+        assert_eq!(request.header, IoctlHeader::new(IoctlCommand::Config));
+        assert_eq!(request.max_bytes, 256);
+        assert_eq!(request.max_entries, 100);
+        assert_eq!(request.high_watermark, 80);
+        assert_eq!(request.low_watermark, 70);
+        assert_eq!(request.reserved, 0);
+    }
+
+    #[test]
+    fn test_flush_request_new() {
+        let request = FlushRequest::new();
+        assert_eq!(request.header, IoctlHeader::new(IoctlCommand::Flush));
+    }
+
+    #[test]
+    fn test_config_flush_sizes() {
+        assert_eq!(std::mem::size_of::<ConfigRequest>(), 36);
+        assert_eq!(std::mem::size_of::<FlushRequest>(), 4);
     }
 }
