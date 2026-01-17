@@ -45,10 +45,27 @@ impl Key {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Value {
     len: u16,
     data: [u8;MAX_VALUE_SIZE],
 }
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl Eq for Value {}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len.hash(state);
+        self.as_bytes().hash(state);
+    }
+}
+
 impl Value {
     pub fn new(data: &[u8]) -> Option<Self> {
         if data.len() > MAX_VALUE_SIZE {
@@ -63,6 +80,10 @@ impl Value {
             len,
             data: v_data,
         })
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data[..self.len as usize]
     }
 }
 
