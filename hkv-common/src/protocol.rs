@@ -8,6 +8,13 @@
 //! 2. **Minimal Overhead**: Keep headers tiny to reduce copy and cache pressure.
 //! 3. **Versioned ABI**: Embed a protocol version for forward compatibility checks.
 //!
+//! ## Usage Notes
+//!
+//! - Request types carry the command in `IoctlHeader` so the kernel can validate
+//!   metadata before touching payloads.
+//! - Response types return `STATUS_OK` on success or `HkvError::code()` on failure.
+//! - Fixed-size buffers keep the ABI stable even when payloads are partially filled.
+//!
 //! ## Memory Layout Example
 //!
 //! ```text
@@ -53,10 +60,12 @@
 //! | header:4B  | key:258B|
 //! +------------+---------+
 //!
-//! InvalidateRequest (270 bytes total):
+//! InvalidateRequest (272 bytes total):
 //! +------------+---------+-----------+
-//! | header:4B  | key:258B| version:8B|
+//! | header:4B  | key:258B| pad:2B    |
 //! +------------+---------+-----------+
+//! | version:8B                       |
+//! +----------------------------------+
 //!
 //! StatsRequest (4 bytes total):
 //! +------------+
@@ -68,12 +77,12 @@
 //! | header:4B  | status:2B | reserved:2B | stats:104B        |
 //! +------------+-----------+-------------+-------------------+
 //!
-//! ConfigRequest (36 bytes total):
+//! ConfigRequest (40 bytes total):
 //! +------------+-------------+-------------+-----------+-----------+
-//! | header:4B  | max_bytes:8B| max_entries:8B| high:4B | low:4B    |
+//! | header:4B  | pad:4B      | max_bytes:8B| max_entries:8B        |
 //! +------------+-------------+-------------+-----------+-----------+
-//! | reserved:8B                                                   |
-//! +---------------------------------------------------------------+
+//! | high:4B    | low:4B      | reserved:8B                           |
+//! +------------+-------------+---------------------------------------+
 //!
 //! FlushRequest (4 bytes total):
 //! +------------+
@@ -128,6 +137,8 @@ impl IoctlHeader {
 ///
 /// Uses the header + payload pattern to validate command metadata once and
 /// keep the key inline for zero-allocation FFI transfers.
+///
+/// Use: Issued by user space to fetch a value from the kernel cache.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadRequest {
@@ -151,6 +162,8 @@ impl ReadRequest {
 ///
 /// The `status` field uses `STATUS_OK` for success or an `HkvError::code()`
 /// value on failure. The `value` buffer is valid only when `status` is OK.
+///
+/// Use: Returned by the kernel after processing a read lookup.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadResponse {
@@ -178,6 +191,8 @@ impl ReadResponse {
 /// The header identifies the command, while the payload carries only the
 /// minimum metadata needed for cache admission (version + TTL) to keep the
 /// user/kernel copy as small as possible.
+///
+/// Use: Issued by user space to promote one entry into the kernel cache.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromoteRequest {
@@ -209,6 +224,8 @@ impl PromoteRequest {
 /// Promote response payload indicating success or failure.
 ///
 /// Uses `STATUS_OK` on success or an `HkvError::code()` value on failure.
+///
+/// Use: Returned by the kernel after handling a promote request.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromoteResponse {
@@ -263,6 +280,8 @@ impl BatchPromoteEntry {
 ///
 /// Uses the header+payload pattern to amortize syscall overhead while
 /// preserving a flat, FFI-friendly layout.
+///
+/// Use: Issued by user space to promote multiple entries in one ioctl call.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchPromoteRequest {
@@ -292,6 +311,8 @@ impl BatchPromoteRequest {
 /// Batch promote response payload with per-entry success bitmap.
 ///
 /// Uses a bitmap pattern: bit=1 indicates success, bit=0 indicates failure.
+///
+/// Use: Returned by the kernel to report batch promotion results.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchPromoteResponse {
@@ -319,6 +340,8 @@ impl BatchPromoteResponse {
 }
 
 /// Demote request payload for removing an entry from the kernel cache.
+///
+/// Use: Issued by user space to remove a key from the kernel cache.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemoteRequest {
@@ -339,6 +362,8 @@ impl DemoteRequest {
 }
 
 /// Invalidate request payload for marking a cached entry as stale.
+///
+/// Use: Issued by user space after a write to invalidate a cached key.
 #[repr(C)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidateRequest {
@@ -397,6 +422,8 @@ pub struct CacheStats {
 }
 
 /// Stats request payload for fetching kernel cache telemetry.
+///
+/// Use: Issued by user space to retrieve a snapshot of cache stats.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatsRequest {
@@ -416,6 +443,8 @@ impl StatsRequest {
 /// Stats response payload with a snapshot of cache telemetry.
 ///
 /// Uses `STATUS_OK` on success or an `HkvError::code()` value on failure.
+///
+/// Use: Returned by the kernel with counters and gauges for telemetry.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatsResponse {
@@ -445,6 +474,8 @@ impl StatsResponse {
 ///
 /// This keeps configuration fields aligned and explicit for easy validation
 /// inside the kernel module.
+///
+/// Use: Issued by user space to update cache limits and watermarks.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigRequest {
@@ -482,6 +513,8 @@ impl ConfigRequest {
 }
 
 /// Flush request payload for clearing all kernel cache entries.
+///
+/// Use: Issued by user space to clear all kernel cache entries.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlushRequest {
@@ -605,7 +638,7 @@ mod tests {
     #[test]
     fn test_demote_invalidate_sizes() {
         assert_eq!(std::mem::size_of::<DemoteRequest>(), 262);
-        assert_eq!(std::mem::size_of::<InvalidateRequest>(), 270);
+        assert_eq!(std::mem::size_of::<InvalidateRequest>(), 272);
     }
 
     #[test]
@@ -664,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_config_flush_sizes() {
-        assert_eq!(std::mem::size_of::<ConfigRequest>(), 36);
+        assert_eq!(std::mem::size_of::<ConfigRequest>(), 40);
         assert_eq!(std::mem::size_of::<FlushRequest>(), 4);
     }
 }
