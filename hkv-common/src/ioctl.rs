@@ -59,7 +59,7 @@
 //! Communication flow:
 //!
 //! 1. **User Space** (hkv-client):
-//!    ```
+//!    ```text
 //!    fd = open("/dev/hybridkv", O_RDWR);  // Open device file
 //!    request = ReadRequest { key: "foo" };
 //!    result = ioctl(fd, CMD_READ, &request);  // Send command
@@ -75,7 +75,7 @@
 //!    - Kernel calls our driver's ioctl handler function
 //!
 //! 3. **Kernel Space** (hkv-kernel module):
-//!    ```
+//!    ```text
 //!    fn hybridkv_ioctl(fd, cmd, arg) {
 //!        match cmd {
 //!            CMD_READ => {
