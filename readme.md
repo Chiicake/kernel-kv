@@ -3,7 +3,9 @@
 
 HybridKV is a two-tier key-value system that keeps the authoritative KV engine in user space while offering a kernel-resident hot-key cache for low-latency reads.
 
-HybridKV frameworkizes the kernel cache mechanism: the kernel provides a general data plane (object storage, indexing, concurrency-optimized read path, invalidation/versioning, memory budgeting, telemetry), and all cache decision logic is implemented as pluggable policies, deliver fast read paths for highly skewed workloads without pushing full KV semantics into the kernel. 
+HybridKV frameworkizes the kernel cache mechanism: the kernel provides a general data plane (object storage, indexing, concurrency-optimized read path, invalidation/versioning, memory budgeting, telemetry), and all cache decision logic is implemented as pluggable policies, deliver fast read paths for highly skewed workloads without pushing full KV semantics into the kernel.
+
+Optional: a kernel intercept proxy can listen on Redis port 6379 to fast-path GET/PING in-kernel and forward all other commands to the user-space server on 16379.
 
 ## Why HybridKV
 ### Key strengths
@@ -75,7 +77,7 @@ hybridkv/
 │  ┌─────────────────────────────────────────────────────────────────—─┐  │
 │  │                         KERNEL SPACE                              │  │
 │  │  ┌────────────────────────────────────────────────────────—────┐  │  │
-│  │  │              KERNEL DATA PLANE (Mechanism)                  │  │  │
+│  │  │              KERNEL DATA PLANE                              │  │  │
 │  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │  │  │
 │  │  │  │  Object  │  │   RCU    │  │  Memory  │  │ Invalidation │ │  │  │
 │  │  │  │ Storage  │  │   Hash   │  │ Governor │  │  & Version   │ │  │  │
@@ -86,7 +88,7 @@ hybridkv/
 │  │  │  │(Counters)│  │/dev/hkv  │  │ Events   │  │   Fallback   │ │  │  │
 │  │  │  └──────────┘  └──────────┘  └──────────┘  └──────────────┘ │  │  │
 │  │  └────────────────────────┬────────────────────────────────────┘  │  │
-│  │                           │ Policy Interface (Rust Traits)        │  │
+│  │                           │ Policy Interface                      │  │
 │  │  ┌────────────────────────▼────────────────────────────────────┐  │  │
 │  │  │              POLICY PLANE (Pluggable Decisions)             │  │  │
 │  │  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │  │  │
@@ -107,7 +109,7 @@ hybridkv/
 │  │  └─────────────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
 │                                    ▲                                    │
-│                                    │ ioctl (sync) / Netlink (async)     │
+│                                    │                                    │
 │                                    │                                    │
 │  ┌─────────────────────────────────┴─────────────────────────────────┐  │
 │  │                          USER SPACE                               │  │
@@ -126,8 +128,13 @@ hybridkv/
 │  │  │  • TTL management                                           │  │  │
 │  │  └─────────────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
+│  │   Kernel Intercept Proxy                                          │  │
+│  │   +---------------------------------------------------------+     │  │ 
+│  │   | Listen 6379, RESP GET/PING fast-path, forward to 16379  |     │  │
+│  │   +---------------------------------------------------------+     │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
 │                                    ▲                                    │
-│                                    │ Client Library (hkv-client)        │
+│                                    │                                    │
 │                                    │                                    │
 │  ┌─────────────────────────────────┴─────────────────────────────────┐  │
 │  │                      Client Application                           │  │
@@ -141,7 +148,7 @@ hybridkv/
 
 ### Request Flow
 
-**Read Path (Fast Path)**:
+**Read Path (Fast Path: hkv-client)**:
 ```
 1. Client → hkv-client.get("key")
 2. hkv-client → ioctl(CMD_READ, "key") to /dev/hybridkv
@@ -157,6 +164,17 @@ hybridkv/
    → Return to client (total: 20-40μs)
 ```
 
+**Read Path (Optional Kernel Intercept Proxy)**:
+```
+1. Client → TCP/RESP to 6379 (redis-cli or any Redis client)
+2. Kernel proxy → RESP parse (GET/PING only)
+3. If GET HIT:
+   → respond directly with bulk string
+4. If MISS or unsupported:
+   → forward raw bytes to hkv-server (127.0.0.1:16379)
+   → relay response to client
+```
+
 **Write Path (Write-Through)**:
 ```
 1. Client → hkv-client.set("key", "value")
@@ -165,6 +183,14 @@ hybridkv/
 4. hkv-server → ioctl(CMD_INVALIDATE, "key") to kernel
 5. Kernel → Mark entry stale or remove (consistency mode)
 6. Background: Promotion Manager decides if re-promotion needed
+```
+
+**Write Path (Optional Kernel Intercept Proxy)**:
+```
+1. Client → TCP/RESP to 6379
+2. Kernel proxy → forward to hkv-server (127.0.0.1:16379)
+3. hkv-server → hkv-engine.set("key", "value")
+4. hkv-server → ioctl(CMD_INVALIDATE, "key") to kernel
 ```
 
 **Promotion Flow (Background)**:
@@ -228,6 +254,5 @@ Isolation Features:
 ## Documentation
 
 Still working...
-
 
 
