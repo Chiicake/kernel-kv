@@ -5,8 +5,10 @@
 pub mod ioctl;
 pub mod error;
 pub mod types;
+pub mod protocol;
 
 // Re-export for convenience
 pub use ioctl::*;
 pub use error::*;
 pub use types::*;
+pub use protocol::*;
