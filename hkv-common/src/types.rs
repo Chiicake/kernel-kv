@@ -22,3 +22,24 @@ impl Key {
         Some(key)
     }
 }
+
+pub struct Value {
+    len: u16,
+    data: [u8;MAX_VALUE_SIZE],
+}
+impl Value {
+    pub fn new(data: &[u8]) -> Option<Self> {
+        if data.len() > MAX_VALUE_SIZE {
+            return None;
+        }
+
+        let len = data.len() as u16;
+        let mut v_data = [0u8; MAX_VALUE_SIZE];
+        v_data[..data.len()].copy_from_slice(data);
+
+        Some(Value{
+            len,
+            data: v_data,
+        })
+    }
+}

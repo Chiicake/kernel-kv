@@ -1,176 +1,181 @@
-// ioctl.rs - ioctl command definitions for HybridKV kernel module
-//
-// This module defines the ioctl commands used to communicate with the
-// /dev/hybridkv character device.
-//
-// ============================================================================
-// WHY IOCTL?
-// ============================================================================
-//
-// ioctl (input/output control) is a Linux system call that allows user-space
-// programs to communicate with device drivers and kernel modules. It's the
-// standard mechanism for sending commands and control data to drivers.
-//
-// For HybridKV, we use ioctl because:
-//
-// 1. **Low Latency**: Direct syscall to kernel, minimal overhead (~100-200ns)
-//    - No socket/network stack overhead
-//    - No context switching between multiple processes
-//    - Direct memory copy between user/kernel space
-//
-// 2. **Synchronous Operation**: ioctl blocks until kernel completes the request
-//    - Simplifies error handling (immediate success/failure)
-//    - Predictable latency characteristics
-//    - No async callback complexity for fast operations
-//
-// 3. **Type Safety**: Can pass structured data with known sizes
-//    - Request/response structs validated at compile time
-//    - Kernel can verify magic numbers and sizes
-//    - Reduces risk of memory corruption
-//
-// 4. **Standard Linux Pattern**: Well-understood by kernel developers
-//    - Extensive documentation and examples
-//    - Built-in support in kernel APIs
-//    - Integration with existing tools (strace, etc.)
-//
-// Alternative approaches we considered but rejected:
-//
-// - **Netlink sockets**: Good for async notifications (we use this for eviction
-//   events), but overkill for synchronous read/write operations. Higher overhead.
-//
-// - **procfs/sysfs**: Good for simple config values, but awkward for binary data
-//   and structured operations. String parsing overhead unacceptable.
-//
-// - **Shared memory**: Extremely fast, but requires complex synchronization
-//   (locks, atomics) and is harder to make safe. Risk of race conditions.
-//
-// - **System calls**: Would require patching the kernel with custom syscalls,
-//   making it impossible to deploy as a loadable module.
-//
-// ============================================================================
-// HOW IOCTL WORKS
-// ============================================================================
-//
-// Communication flow:
-//
-// 1. **User Space** (hkv-client):
-//    ```
-//    fd = open("/dev/hybridkv", O_RDWR);  // Open device file
-//    request = ReadRequest { key: "foo" };
-//    result = ioctl(fd, CMD_READ, &request);  // Send command
-//    if (result == 0) {
-//        // Success: response written to request struct
-//        value = request.response.value;
-//    }
-//    ```
-//
-// 2. **Kernel Transition**:
-//    - CPU switches from user mode to kernel mode (context switch)
-//    - Kernel validates the ioctl command number and permissions
-//    - Kernel calls our driver's ioctl handler function
-//
-// 3. **Kernel Space** (hkv-kernel module):
-//    ```
-//    fn hybridkv_ioctl(fd, cmd, arg) {
-//        match cmd {
-//            CMD_READ => {
-//                request = copy_from_user(arg);  // Copy request from user space
-//                value = hash_table_lookup(request.key);
-//                response = ReadResponse { value };
-//                copy_to_user(arg, response);  // Copy response back to user
-//                return 0;  // Success
-//            }
-//            _ => return -EINVAL;  // Invalid command
-//        }
-//    }
-//    ```
-//
-// 4. **Return to User Space**:
-//    - Kernel copies response data back to user space
-//    - CPU switches back to user mode
-//    - ioctl() returns 0 (success) or -1 (error with errno set)
-//    - User space processes the response
-//
-// ============================================================================
-// IOCTL COMMAND NUMBER ENCODING
-// ============================================================================
-//
-// Linux ioctl command numbers are typically 32-bit values encoded as:
-//
-//   bits 31-30: Direction (read/write/both)
-//   bits 29-16: Size of data structure
-//   bits 15-8:  Magic number (unique per driver, 'H' for HybridKV)
-//   bits 7-0:   Command number (0-255)
-//
-// However, for simplicity, we use just the command number (0-255) and handle
-// the full encoding in the hkv-client crate using Linux's ioctl macros:
-//
-//   _IO(magic, nr)         - No data transfer
-//   _IOR(magic, nr, type)  - Read from kernel
-//   _IOW(magic, nr, type)  - Write to kernel
-//   _IOWR(magic, nr, type) - Read and write
-//
-// Example:
-//   CMD_READ is encoded as _IOWR('H', 0, ReadRequest)
-//   This tells the kernel: "HybridKV command 0, bidirectional data transfer"
-//
-// ============================================================================
-// SAFETY CONSIDERATIONS
-// ============================================================================
-//
-// ioctl crosses the user/kernel boundary, which requires extreme care:
-//
-// 1. **Validate ALL user input**: Never trust data from user space
-//    - Check sizes before copying (prevent buffer overflows)
-//    - Validate magic numbers (detect corruption)
-//    - Check version numbers (prevent ABI mismatches)
-//
-// 2. **Use copy_from_user/copy_to_user**: Never dereference user pointers directly
-//    - These functions handle page faults safely
-//    - Validate that user addresses are valid and accessible
-//    - Prevent kernel crashes from bad pointers
-//
-// 3. **Bounds checking**: Enforce maximum sizes for keys/values
-//    - MAX_KEY_SIZE = 256 bytes
-//    - MAX_VALUE_SIZE = 1024 bytes
-//    - Reject oversized requests before allocation
-//
-// 4. **Error handling**: Always return proper error codes
-//    - Use standard Linux errno values (EINVAL, ENOMEM, etc.)
-//    - Never panic or cause kernel oops
-//    - Provide meaningful error context to user space
-//
-// 5. **Concurrency**: Multiple threads may call ioctl simultaneously
-//    - Use proper locking (RCU for reads, spinlocks for writes)
-//    - Avoid holding locks during copy_to_user (may page fault)
-//    - Design for lock-free reads where possible
-//
-// ============================================================================
-// PERFORMANCE CHARACTERISTICS
-// ============================================================================
-//
-// Typical latencies (on modern x86_64 CPU):
-//
-// - ioctl syscall overhead: ~100-200ns
-// - copy_from_user (256 bytes): ~50-100ns
-// - Hash table lookup (RCU): ~20-50ns
-// - copy_to_user (1KB): ~100-200ns
-// - Total READ latency: ~300-600ns (best case)
-//
-// With kernel cache hit: 1-5μs end-to-end
-// Without kernel (user-space only): 15-30μs
-//
-// Speedup: ~5-10x for hot keys
-//
-// ============================================================================
-// DESIGN NOTES
-// ============================================================================
-//
-// - Each command has a unique number (0-255)
-// - Commands follow Linux ioctl conventions
-// - All commands go through the /dev/hybridkv device file
-// - Magic number 'H' (0x48) identifies HybridKV commands
-// - Commands are grouped logically: data ops (0-4), monitoring (5), control (6-7)
+//! # ioctl.rs - ioctl command definitions for HybridKV kernel module
+//!
+//! Purpose: Define ioctl commands, safety rules, and performance notes for the
+//! `/dev/hybridkv` character device.
+//!
+//! ## Design Principles
+//! 1. **Low Latency**: Keep the kernel fast path minimal and predictable.
+//! 2. **Type Safety**: Encode sizes and layouts explicitly across the boundary.
+//! 3. **Safety First**: Validate all input and bound all copies.
+//!
+//! ============================================================================
+//! WHY IOCTL?
+//! ============================================================================
+//!
+//! ioctl (input/output control) is a Linux system call that allows user-space
+//! programs to communicate with device drivers and kernel modules. It's the
+//! standard mechanism for sending commands and control data to drivers.
+//!
+//! For HybridKV, we use ioctl because:
+//!
+//! 1. **Low Latency**: Direct syscall to kernel, minimal overhead (~100-200ns)
+//!    - No socket/network stack overhead
+//!    - No context switching between multiple processes
+//!    - Direct memory copy between user/kernel space
+//!
+//! 2. **Synchronous Operation**: ioctl blocks until kernel completes the request
+//!    - Simplifies error handling (immediate success/failure)
+//!    - Predictable latency characteristics
+//!    - No async callback complexity for fast operations
+//!
+//! 3. **Type Safety**: Can pass structured data with known sizes
+//!    - Request/response structs validated at compile time
+//!    - Kernel can verify magic numbers and sizes
+//!    - Reduces risk of memory corruption
+//!
+//! 4. **Standard Linux Pattern**: Well-understood by kernel developers
+//!    - Extensive documentation and examples
+//!    - Built-in support in kernel APIs
+//!    - Integration with existing tools (strace, etc.)
+//!
+//! Alternative approaches we considered but rejected:
+//!
+//! - **Netlink sockets**: Good for async notifications (we use this for eviction
+//!   events), but overkill for synchronous read/write operations. Higher overhead.
+//!
+//! - **procfs/sysfs**: Good for simple config values, but awkward for binary data
+//!   and structured operations. String parsing overhead unacceptable.
+//!
+//! - **Shared memory**: Extremely fast, but requires complex synchronization
+//!   (locks, atomics) and is harder to make safe. Risk of race conditions.
+//!
+//! - **System calls**: Would require patching the kernel with custom syscalls,
+//!   making it impossible to deploy as a loadable module.
+//!
+//! ============================================================================
+//! HOW IOCTL WORKS
+//! ============================================================================
+//!
+//! Communication flow:
+//!
+//! 1. **User Space** (hkv-client):
+//!    ```
+//!    fd = open("/dev/hybridkv", O_RDWR);  // Open device file
+//!    request = ReadRequest { key: "foo" };
+//!    result = ioctl(fd, CMD_READ, &request);  // Send command
+//!    if (result == 0) {
+//!        // Success: response written to request struct
+//!        value = request.response.value;
+//!    }
+//!    ```
+//!
+//! 2. **Kernel Transition**:
+//!    - CPU switches from user mode to kernel mode (context switch)
+//!    - Kernel validates the ioctl command number and permissions
+//!    - Kernel calls our driver's ioctl handler function
+//!
+//! 3. **Kernel Space** (hkv-kernel module):
+//!    ```
+//!    fn hybridkv_ioctl(fd, cmd, arg) {
+//!        match cmd {
+//!            CMD_READ => {
+//!                request = copy_from_user(arg);  // Copy request from user space
+//!                value = hash_table_lookup(request.key);
+//!                response = ReadResponse { value };
+//!                copy_to_user(arg, response);  // Copy response back to user
+//!                return 0;  // Success
+//!            }
+//!            _ => return -EINVAL;  // Invalid command
+//!        }
+//!    }
+//!    ```
+//!
+//! 4. **Return to User Space**:
+//!    - Kernel copies response data back to user space
+//!    - CPU switches back to user mode
+//!    - ioctl() returns 0 (success) or -1 (error with errno set)
+//!    - User space processes the response
+//!
+//! ============================================================================
+//! IOCTL COMMAND NUMBER ENCODING
+//! ============================================================================
+//!
+//! Linux ioctl command numbers are typically 32-bit values encoded as:
+//!
+//!   bits 31-30: Direction (read/write/both)
+//!   bits 29-16: Size of data structure
+//!   bits 15-8:  Magic number (unique per driver, 'H' for HybridKV)
+//!   bits 7-0:   Command number (0-255)
+//!
+//! However, for simplicity, we use just the command number (0-255) and handle
+//! the full encoding in the hkv-client crate using Linux's ioctl macros:
+//!
+//!   _IO(magic, nr)         - No data transfer
+//!   _IOR(magic, nr, type)  - Read from kernel
+//!   _IOW(magic, nr, type)  - Write to kernel
+//!   _IOWR(magic, nr, type) - Read and write
+//!
+//! Example:
+//!   CMD_READ is encoded as _IOWR('H', 0, ReadRequest)
+//!   This tells the kernel: "HybridKV command 0, bidirectional data transfer"
+//!
+//! ============================================================================
+//! SAFETY CONSIDERATIONS
+//! ============================================================================
+//!
+//! ioctl crosses the user/kernel boundary, which requires extreme care:
+//!
+//! 1. **Validate ALL user input**: Never trust data from user space
+//!    - Check sizes before copying (prevent buffer overflows)
+//!    - Validate magic numbers (detect corruption)
+//!    - Check version numbers (prevent ABI mismatches)
+//!
+//! 2. **Use copy_from_user/copy_to_user**: Never dereference user pointers directly
+//!    - These functions handle page faults safely
+//!    - Validate that user addresses are valid and accessible
+//!    - Prevent kernel crashes from bad pointers
+//!
+//! 3. **Bounds checking**: Enforce maximum sizes for keys/values
+//!    - MAX_KEY_SIZE = 256 bytes
+//!    - MAX_VALUE_SIZE = 1024 bytes
+//!    - Reject oversized requests before allocation
+//!
+//! 4. **Error handling**: Always return proper error codes
+//!    - Use standard Linux errno values (EINVAL, ENOMEM, etc.)
+//!    - Never panic or cause kernel oops
+//!    - Provide meaningful error context to user space
+//!
+//! 5. **Concurrency**: Multiple threads may call ioctl simultaneously
+//!    - Use proper locking (RCU for reads, spinlocks for writes)
+//!    - Avoid holding locks during copy_to_user (may page fault)
+//!    - Design for lock-free reads where possible
+//!
+//! ============================================================================
+//! PERFORMANCE CHARACTERISTICS
+//! ============================================================================
+//!
+//! Typical latencies (on modern x86_64 CPU):
+//!
+//! - ioctl syscall overhead: ~100-200ns
+//! - copy_from_user (256 bytes): ~50-100ns
+//! - Hash table lookup (RCU): ~20-50ns
+//! - copy_to_user (1KB): ~100-200ns
+//! - Total READ latency: ~300-600ns (best case)
+//!
+//! With kernel cache hit: 1-5μs end-to-end
+//! Without kernel (user-space only): 15-30μs
+//!
+//! Speedup: ~5-10x for hot keys
+//!
+//! ============================================================================
+//! DESIGN NOTES
+//! ============================================================================
+//!
+//! - Each command has a unique number (0-255)
+//! - Commands follow Linux ioctl conventions
+//! - All commands go through the /dev/hybridkv device file
+//! - Magic number 'H' (0x48) identifies HybridKV commands
+//! - Commands are grouped logically: data ops (0-4), monitoring (5), control (6-7)
 
 /// ioctl magic number for HybridKV device
 ///
