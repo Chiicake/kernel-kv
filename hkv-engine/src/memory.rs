@@ -214,11 +214,16 @@ impl ShardInner {
     ///
     /// This updates the map, LRU links, and free list.
     fn remove_idx(&mut self, idx: usize) -> Option<usize> {
-        let node = self.nodes[idx].take()?;
+        let node = self.nodes[idx].as_ref()?;
+        let key = Arc::clone(&node.key);
+        let size = node.size;
+
+        // Detach before clearing the slot so LRU pointers stay valid.
         self.lru_remove(idx);
-        self.map.remove(node.key.as_ref());
+        self.nodes[idx] = None;
+        self.map.remove(key.as_ref());
         self.free.push(idx);
-        Some(node.size)
+        Some(size)
     }
 
     /// Removes and returns the least-recently used node size.

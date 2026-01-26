@@ -3,6 +3,21 @@
 //! Purpose: Provide a dependency-free, repeatable benchmark driver for the
 //! in-memory engine so baseline throughput and latency can be compared over time.
 //!
+//! ## Usage
+//!
+//! Run the harness directly as a binary. Arguments are optional and override
+//! defaults in this order: `<key_count> <op_count> <key_size> <value_size>`.
+//!
+//! ```bash
+//! # Default workload (65,536 keys, 1,000,000 ops, 16B keys, 128B values)
+//! cargo run -p hkv-engine --bin bench_engine --release
+//!
+//! # Custom workload: 262,144 keys, 2,000,000 ops, 32B keys, 512B values
+//! cargo run -p hkv-engine --bin bench_engine --release -- 262144 2000000 32 512
+//! ```
+//!
+//! Output reports per-operation latency and throughput for GET and SET phases.
+//!
 //! ## Design Principles
 //! 1. **Deterministic Workload**: Use a fixed PRNG seed for stable comparisons.
 //! 2. **Allocation Control**: Pre-build keys/values to keep setup costs off the hot path.
@@ -15,7 +30,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use hkv_common::HkvResult;
-use hkv_engine::MemoryEngine;
+use hkv_engine::{KVEngine, MemoryEngine};
 
 const DEFAULT_KEY_COUNT: usize = 1 << 16;
 const DEFAULT_OP_COUNT: usize = 1_000_000;
