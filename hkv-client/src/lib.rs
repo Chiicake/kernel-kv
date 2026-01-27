@@ -1,14 +1,16 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! # HybridKV Sync Client
+//!
+//! Purpose: Provide a lightweight, synchronous Redis-compatible client with
+//! connection pooling to minimize TCP handshake overhead.
+//!
+//! ## Design Principles
+//! 1. **Object Pool Pattern**: Reuse TCP connections to avoid repeated connects.
+//! 2. **Zero-Cost Abstractions**: Keep hot-path calls monomorphic and inline-friendly.
+//! 3. **Minimal Allocation**: Reuse buffers for RESP framing and parsing.
+//! 4. **Protocol Clarity**: Encode/parse RESP2 explicitly for correctness.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod client;
+mod pool;
+mod resp;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use client::{ClientConfig, ClientError, ClientResult, ClientTtl, KVClient};
