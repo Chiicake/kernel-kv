@@ -14,10 +14,12 @@
 //! ## Design Principles
 //!
 //! 1. **Sharded Locks**: Per-shard locks reduce contention under concurrency.
-//! 2. **Byte-Based LRU**: Evict by total bytes to enforce memory limits.
-//! 3. **Arc-backed Buffers**: Values are `Arc<[u8]>` to avoid extra copies.
-//! 4. **TTL Fast Path**: Expiration is checked on access for O(1) reads.
-//! 5. **Strategy Pattern**: Implements `KVEngine` to keep callers decoupled.
+//! 2. **Per-Shard LRU**: Each shard maintains its own LRU list; eviction
+//!    round-robins across shards for a scalable but non-global ordering.
+//! 3. **Byte-Based LRU**: Evict by total bytes to enforce memory limits.
+//! 4. **Arc-backed Buffers**: Values are `Arc<[u8]>` to avoid extra copies.
+//! 5. **TTL Fast Path**: Expiration is checked on access for O(1) reads.
+//! 6. **Strategy Pattern**: Implements `KVEngine` to keep callers decoupled.
 //!
 //! ## Structure Overview
 //!
