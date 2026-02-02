@@ -63,15 +63,13 @@ pub struct Metrics {
 
 impl Metrics {
     /// Creates a new metrics aggregator with the default latency buckets.
-    ///
-    /// **Input**: none.
-    /// **Output**: a `Metrics` instance with zeroed counters and default buckets.
-    ///
-    /// **Logic**:
-    /// 1. Allocate the histogram with `DEFAULT_LATENCY_BUCKETS_US`.
-    /// 2. Initialize counters to zero.
     pub fn new() -> Self {
-        todo!("initialize counters + histogram with DEFAULT_LATENCY_BUCKETS_US");
+        Metrics{
+            requests_total: 0.into(),
+            errors_total: 0.into(),
+            inflight: 0.into(),
+            latency: LatencyHistogram::new(DEFAULT_LATENCY_BUCKETS_US.to_vec()),
+        }
     }
 
     /// Creates a new metrics aggregator with custom latency bucket boundaries.
