@@ -78,13 +78,13 @@ impl Metrics {
     ///
     /// **Input**: `bounds_us` (ascending microsecond thresholds).
     /// **Output**: a `Metrics` instance configured with those buckets.
-    ///
-    /// **Logic**:
-    /// 1. Build a `LatencyHistogram` sized to `bounds_us.len() + 1`.
-    /// 2. Zero all counters.
     pub fn with_latency_buckets(bounds_us: Vec<u64>) -> Self {
-        let _ = bounds_us;
-        todo!("store bounds_us and initialize counters + histogram");
+        Metrics{
+            requests_total: 0.into(),
+            errors_total: 0.into(),
+            inflight: 0.into(),
+            latency: LatencyHistogram::new(bounds_us.to_vec()),
+        }
     }
 
     /// Records the start of a request.
