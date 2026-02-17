@@ -72,6 +72,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hkv-bench"
+version = "0.1.0"
+
+[[package]]
 name = "hkv-client"
 version = "0.1.0"
 
