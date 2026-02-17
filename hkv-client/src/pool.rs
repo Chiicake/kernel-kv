@@ -1,13 +1,7 @@
 //! # Connection Pool
 //!
-//! Purpose: Reuse TCP connections for the sync client to reduce handshake
+//! Reuse TCP connections for the sync client to reduce handshake
 //! latency and allocation churn.
-//!
-//! ## Design Principles
-//! 1. **Object Pool Pattern**: Keep a bounded set of reusable connections.
-//! 2. **Minimal Locking**: Hold the mutex only while moving idle connections.
-//! 3. **Fail Fast**: Exceeding the pool limit returns an error immediately.
-//! 4. **Cache-Friendly Buffers**: Each connection reuses its own buffers.
 
 use std::collections::VecDeque;
 use std::io::{BufReader, Write};
@@ -21,7 +15,7 @@ use crate::resp::{encode_command, read_response, RespValue};
 /// Pool configuration for the sync client.
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Server address, e.g. "127.0.0.1:6379".
+    /// Server address
     pub addr: String,
     /// Maximum number of idle connections to keep.
     pub max_idle: usize,

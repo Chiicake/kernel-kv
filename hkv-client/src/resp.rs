@@ -1,6 +1,6 @@
 //! # RESP2 Encoding and Parsing
 //!
-//! Purpose: Encode client commands and parse server responses without
+//! Encode client commands and parse server responses without
 //! external dependencies, keeping allocations under control.
 //!
 //! ## RESP Coverage

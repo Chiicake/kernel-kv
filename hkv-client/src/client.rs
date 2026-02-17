@@ -1,6 +1,6 @@
 //! # Synchronous Client API
 //!
-//! Purpose: Expose a compact, blocking API for issuing Redis-compatible
+//! Expose a compact, blocking API for issuing Redis-compatible
 //! commands to the HybridKV server over RESP2.
 //!
 //! ## Usage
