@@ -1,6 +1,6 @@
 //! # Server Metrics
 //!
-//! Purpose: Provide lightweight counters and a latency histogram to compute
+//! Provide lightweight counters and a latency histogram to compute
 //! QPS, error rate, and tail latency for the user-space server.
 //!
 //! ## Design Principles
@@ -90,13 +90,6 @@ impl Metrics {
     /// Records the start of a request.
     ///
     /// Call this when a request is accepted to increment totals and in-flight.
-    ///
-    /// **Input**: none.
-    /// **Output**: none (side-effects only).
-    ///
-    /// **Logic**:
-    /// 1. Increment `requests_total`.
-    /// 2. Increment `inflight`.
     pub fn record_request_start(&self) {
         self.requests_total.fetch_add(1, Ordering::Relaxed);
         self.inflight.fetch_add(1, Ordering::Relaxed);
@@ -113,19 +106,13 @@ impl Metrics {
     /// 1. Decrement `inflight`.
     /// 2. Record the latency into the histogram.
     pub fn record_request_end(&self, latency: Duration) {
-        let _ = latency;
-        todo!("atomic decrement inflight and record latency");
+        self.inflight.fetch_sub(1, Ordering::Relaxed);
+        self.latency.record(latency);
     }
 
     /// Records an error response.
-    ///
-    /// **Input**: none.
-    /// **Output**: none (side-effects only).
-    ///
-    /// **Logic**:
-    /// 1. Increment `errors_total`.
     pub fn record_error(&self) {
-        todo!("atomic increment errors_total");
+        self.errors_total.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns a snapshot of all counters and histogram buckets.
@@ -138,7 +125,12 @@ impl Metrics {
     /// 2. Ask the histogram for a snapshot.
     /// 3. Return a struct with those values.
     pub fn snapshot(&self) -> MetricsSnapshot {
-        todo!("collect counters + latency snapshot");
+        MetricsSnapshot {
+            requests_total: self.requests_total.load(Ordering::Relaxed),
+            errors_total: self.errors_total.load(Ordering::Relaxed),
+            inflight: self.inflight.load(Ordering::Relaxed),
+            latency: self.latency.snapshot(),
+        }
     }
 }
 

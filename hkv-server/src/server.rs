@@ -2,13 +2,6 @@
 //!
 //! Accept RESP2 connections, parse commands, and dispatch them to the
 //! storage engine with minimal overhead.
-//!
-//! ## Design Principles
-//!
-//! 1. **Command Pattern**: Dispatch by command name keeps handlers isolated.
-//! 2. **Streaming IO**: Reuse buffers across reads to avoid allocations.
-//! 3. **Binary-Safe Payloads**: Treat keys/values as raw bytes.
-//! 4. **Fail Fast**: Malformed frames return an error and close the connection.
 
 use std::sync::Arc;
 use std::time::Duration;

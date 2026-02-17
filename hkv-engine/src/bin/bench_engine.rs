@@ -81,9 +81,7 @@ fn normalize_power_of_two(value: usize) -> usize {
     }
 }
 
-/// Tiny deterministic PRNG used to avoid external dependencies.
-///
-/// XorShift is fast enough for benchmarks and keeps the workload reproducible.
+/// Tiny deterministic PRNG.
 struct XorShift64 {
     state: u64,
 }
