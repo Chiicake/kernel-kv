@@ -54,3 +54,4 @@ $RECYCLE.BIN/
 *.orig
 coverage/
 
+.gitnexus
