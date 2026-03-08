@@ -126,9 +126,7 @@ fn report(label: &str, ops: usize, elapsed: std::time::Duration) {
     let secs = elapsed.as_secs_f64();
     let ops_per_sec = (ops as f64) / secs;
     let nanos_per_op = (secs * 1e9) / (ops as f64);
-    println!(
-        "{label}: {ops} ops in {secs:.3}s ({ops_per_sec:.0} ops/s, {nanos_per_op:.1} ns/op)"
-    );
+    println!("{label}: {ops} ops in {secs:.3}s ({ops_per_sec:.0} ops/s, {nanos_per_op:.1} ns/op)");
 }
 
 fn main() {
