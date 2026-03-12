@@ -15,7 +15,7 @@
 //! - Bucket boundaries are expressed in microseconds and can be tuned later.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Default latency bucket boundaries in microseconds.
 ///
@@ -32,6 +32,8 @@ pub struct MetricsSnapshot {
     pub errors_total: u64,
     /// Current in-flight requests.
     pub inflight: u64,
+    /// Time since the metrics instance was created.
+    pub uptime: Duration,
     /// Latency histogram snapshot.
     pub latency: LatencySnapshot,
 }
@@ -47,6 +49,8 @@ pub struct LatencySnapshot {
     pub samples: u64,
     /// Sum of latencies in microseconds.
     pub sum_us: u64,
+    /// Maximum observed latency in microseconds.
+    pub max_us: u64,
 }
 
 /// Thread-safe metrics aggregator for the server.
@@ -59,6 +63,7 @@ pub struct Metrics {
     errors_total: AtomicU64,
     inflight: AtomicU64,
     latency: LatencyHistogram,
+    started_at: Instant,
 }
 
 impl Metrics {
@@ -69,6 +74,7 @@ impl Metrics {
             errors_total: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
             latency: LatencyHistogram::new(DEFAULT_LATENCY_BUCKETS_US.to_vec()),
+            started_at: Instant::now(),
         }
     }
 
@@ -84,6 +90,7 @@ impl Metrics {
             errors_total: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
             latency: LatencyHistogram::new(bounds_us),
+            started_at: Instant::now(),
         }
     }
 
@@ -114,7 +121,29 @@ impl Metrics {
             requests_total: self.requests_total.load(Ordering::Relaxed),
             errors_total: self.errors_total.load(Ordering::Relaxed),
             inflight: self.inflight.load(Ordering::Relaxed),
+            uptime: self.started_at.elapsed(),
             latency: self.latency.snapshot(),
+        }
+    }
+}
+
+impl MetricsSnapshot {
+    /// Returns the average queries per second since the metrics instance started.
+    pub fn qps(&self) -> f64 {
+        let uptime_secs = self.uptime.as_secs_f64();
+        if uptime_secs <= f64::EPSILON {
+            self.requests_total as f64
+        } else {
+            self.requests_total as f64 / uptime_secs
+        }
+    }
+
+    /// Returns the fraction of requests that produced an error response.
+    pub fn error_rate(&self) -> f64 {
+        if self.requests_total == 0 {
+            0.0
+        } else {
+            self.errors_total as f64 / self.requests_total as f64
         }
     }
 }
@@ -129,6 +158,7 @@ pub struct LatencyHistogram {
     buckets: Vec<AtomicU64>,
     sum_us: AtomicU64,
     samples: AtomicU64,
+    max_us: AtomicU64,
 }
 
 impl LatencyHistogram {
@@ -144,6 +174,7 @@ impl LatencyHistogram {
             buckets,
             sum_us: AtomicU64::new(0),
             samples: AtomicU64::new(0),
+            max_us: AtomicU64::new(0),
         }
     }
 
@@ -154,6 +185,7 @@ impl LatencyHistogram {
         let micros = latency.as_micros() as u64;
         self.samples.fetch_add(1, Ordering::Relaxed);
         self.sum_us.fetch_add(micros, Ordering::Relaxed);
+        update_max(&self.max_us, micros);
 
         let mut bucket_idx = self.bounds_us.len();
         for (i, &bound) in self.bounds_us.iter().enumerate() {
@@ -178,6 +210,92 @@ impl LatencyHistogram {
             buckets,
             samples: self.samples.load(Ordering::Relaxed),
             sum_us: self.sum_us.load(Ordering::Relaxed),
+            max_us: self.max_us.load(Ordering::Relaxed),
         }
+    }
+}
+
+impl LatencySnapshot {
+    /// Returns the arithmetic mean latency in microseconds.
+    pub fn average_us(&self) -> Option<f64> {
+        if self.samples == 0 {
+            None
+        } else {
+            Some(self.sum_us as f64 / self.samples as f64)
+        }
+    }
+
+    /// Returns the histogram upper bound that satisfies the requested percentile.
+    pub fn percentile_us(&self, percentile: f64) -> Option<u64> {
+        if self.samples == 0 || !(0.0..=100.0).contains(&percentile) || percentile == 0.0 {
+            return None;
+        }
+
+        let rank = ((self.samples as f64) * (percentile / 100.0)).ceil() as u64;
+        let target = rank.max(1);
+        let mut cumulative = 0u64;
+
+        for (idx, count) in self.buckets.iter().copied().enumerate() {
+            cumulative = cumulative.saturating_add(count);
+            if cumulative < target {
+                continue;
+            }
+
+            return if idx < self.bounds_us.len() {
+                Some(self.bounds_us[idx])
+            } else {
+                Some(self.max_us)
+            };
+        }
+
+        Some(self.max_us)
+    }
+}
+
+fn update_max(max: &AtomicU64, value: u64) {
+    let mut current = max.load(Ordering::Relaxed);
+    while value > current {
+        match max.compare_exchange(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_computes_percentiles_average_and_error_rate() {
+        let metrics = Metrics::with_latency_buckets(vec![10, 20, 50, 100]);
+
+        metrics.record_request_start();
+        metrics.record_request_end(Duration::from_micros(9));
+        metrics.record_request_start();
+        metrics.record_request_end(Duration::from_micros(12));
+        metrics.record_request_start();
+        metrics.record_request_end(Duration::from_micros(80));
+        metrics.record_error();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.requests_total, 3);
+        assert_eq!(snapshot.errors_total, 1);
+        assert_eq!(snapshot.inflight, 0);
+        assert_eq!(snapshot.latency.samples, 3);
+        assert_eq!(snapshot.latency.percentile_us(50.0), Some(20));
+        assert_eq!(snapshot.latency.percentile_us(90.0), Some(100));
+        assert_eq!(snapshot.latency.max_us, 80);
+        assert_eq!(snapshot.latency.average_us(), Some(33.666_666_666_666_664));
+        assert!((snapshot.error_rate() - (1.0 / 3.0)).abs() < 1e-12);
+        assert!(snapshot.qps() >= 0.0);
+    }
+
+    #[test]
+    fn percentile_returns_none_without_samples() {
+        let histogram = LatencyHistogram::new(vec![10, 20, 50]);
+        let snapshot = histogram.snapshot();
+        assert_eq!(snapshot.average_us(), None);
+        assert_eq!(snapshot.percentile_us(50.0), None);
     }
 }
