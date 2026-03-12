@@ -8,3 +8,6 @@ hkv-engine = { path = "../hkv-engine" }
 hkv-common = { path = "../hkv-common" }
 bytes = "1"
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+hkv-client = { path = "../hkv-client" }

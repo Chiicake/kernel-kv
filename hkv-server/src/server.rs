@@ -4,7 +4,7 @@
 //! storage engine with minimal overhead.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -12,12 +12,22 @@ use tokio::net::TcpStream;
 
 use hkv_engine::{KVEngine, MemoryEngine, TtlStatus};
 
+use crate::metrics::Metrics;
 use crate::protocol::{RespError, RespParser};
 
 /// Handles a single TCP client connection.
 pub async fn handle_connection(
     stream: TcpStream,
     engine: Arc<MemoryEngine>,
+) -> std::io::Result<()> {
+    handle_connection_with_metrics(stream, engine, Arc::new(Metrics::new())).await
+}
+
+/// Handles a single TCP client connection with shared server metrics.
+pub async fn handle_connection_with_metrics(
+    stream: TcpStream,
+    engine: Arc<MemoryEngine>,
+    metrics: Arc<Metrics>,
 ) -> std::io::Result<()> {
     let mut stream = stream;
     let mut buffer = BytesMut::with_capacity(8 * 1024);
@@ -32,12 +42,23 @@ pub async fn handle_connection(
         loop {
             match parser.parse(&mut buffer) {
                 Ok(Some(args)) => {
-                    let response = dispatch_command(&args, engine.as_ref());
+                    metrics.record_request_start();
+                    let started_at = Instant::now();
+                    let response = dispatch_command(&args, engine.as_ref(), metrics.as_ref());
+                    if is_error_response(&response) {
+                        metrics.record_error();
+                    }
                     stream.write_all(&response).await?;
+                    metrics.record_request_end(started_at.elapsed());
                 }
                 Ok(None) => break,
                 Err(RespError::Protocol) => {
-                    stream.write_all(&*resp_error("protocol error")).await?;
+                    metrics.record_request_start();
+                    metrics.record_error();
+                    let started_at = Instant::now();
+                    let response = resp_error("protocol error");
+                    stream.write_all(&response).await?;
+                    metrics.record_request_end(started_at.elapsed());
                     return Ok(());
                 }
             }
@@ -47,7 +68,7 @@ pub async fn handle_connection(
     Ok(())
 }
 
-fn dispatch_command(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
+fn dispatch_command(args: &[Vec<u8>], engine: &MemoryEngine, metrics: &Metrics) -> Vec<u8> {
     if args.is_empty() {
         return resp_error("empty command");
     }
@@ -72,7 +93,7 @@ fn dispatch_command(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
         return handle_ttl(args, engine);
     }
     if eq_ignore_ascii_case(cmd, b"INFO") {
-        return handle_info();
+        return handle_info(metrics);
     }
 
     resp_error("unknown command")
@@ -182,9 +203,46 @@ fn handle_ttl(args: &[Vec<u8>], engine: &MemoryEngine) -> Vec<u8> {
     }
 }
 
-fn handle_info() -> Vec<u8> {
-    let info = b"role:master\r\nengine:hybridkv\r\n";
-    resp_bulk(info)
+fn handle_info(metrics: &Metrics) -> Vec<u8> {
+    let snapshot = metrics.snapshot();
+    let average_us = snapshot.latency.average_us().unwrap_or(0.0);
+    let p50_us = snapshot.latency.percentile_us(50.0).unwrap_or(0);
+    let p90_us = snapshot.latency.percentile_us(90.0).unwrap_or(0);
+    let p99_us = snapshot.latency.percentile_us(99.0).unwrap_or(0);
+    let p999_us = snapshot.latency.percentile_us(99.9).unwrap_or(0);
+    let info = format!(
+        concat!(
+            "role:master\r\n",
+            "engine:hybridkv\r\n",
+            "requests_total:{}\r\n",
+            "errors_total:{}\r\n",
+            "inflight:{}\r\n",
+            "uptime_sec:{:.3}\r\n",
+            "qps_avg:{:.3}\r\n",
+            "error_rate:{:.3}\r\n",
+            "latency_samples:{}\r\n",
+            "latency_avg_us:{:.3}\r\n",
+            "latency_max_us:{}\r\n",
+            "latency_p50_us:{}\r\n",
+            "latency_p90_us:{}\r\n",
+            "latency_p99_us:{}\r\n",
+            "latency_p999_us:{}\r\n"
+        ),
+        snapshot.requests_total,
+        snapshot.errors_total,
+        snapshot.inflight,
+        snapshot.uptime.as_secs_f64(),
+        snapshot.qps(),
+        snapshot.error_rate(),
+        snapshot.latency.samples,
+        average_us,
+        snapshot.latency.max_us,
+        p50_us,
+        p90_us,
+        p99_us,
+        p999_us,
+    );
+    resp_bulk(info.as_bytes())
 }
 
 fn resp_simple(message: &str) -> Vec<u8> {
@@ -223,6 +281,10 @@ fn resp_bulk(data: &[u8]) -> Vec<u8> {
 
 fn resp_null() -> Vec<u8> {
     b"$-1\r\n".to_vec()
+}
+
+fn is_error_response(response: &[u8]) -> bool {
+    response.first() == Some(&b'-')
 }
 
 fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {

@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 
 use hkv_engine::MemoryEngine;
+use hkv_server::metrics::Metrics;
 use hkv_server::server;
 
 #[tokio::main]
@@ -24,13 +25,15 @@ async fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind(&addr).await?;
 
     let engine = Arc::new(MemoryEngine::new());
+    let metrics = Arc::new(Metrics::new());
     let _expirer = engine.start_expirer(Duration::from_secs(1));
 
     loop {
         let (stream, _) = listener.accept().await?;
         let engine = Arc::clone(&engine);
+        let metrics = Arc::clone(&metrics);
         tokio::spawn(async move {
-            let _ = server::handle_connection(stream, engine).await;
+            let _ = server::handle_connection_with_metrics(stream, engine, metrics).await;
         });
     }
 }

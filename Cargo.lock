@@ -106,6 +106,7 @@ name = "hkv-server"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "hkv-client",
  "hkv-common",
  "hkv-engine",
  "tokio",
